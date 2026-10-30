@@ -1,0 +1,204 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  STATE_REVIEWER
+  CENTRAL_REVIEWER
+}
+
+enum SchemeStatus {
+  DRAFT
+  IN_REVIEW
+  PUBLISHED
+  SENT_BACK
+}
+
+enum ReviewAction {
+  APPROVED
+  SENT_BACK
+}
+
+enum ReviewFlagStatus {
+  PENDING
+  RESOLVED
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      Role
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  createdSchemes         Scheme[]                 @relation("UserCreatedSchemes")
+  createdSchemeVersions  SchemeVersion[]          @relation("UserCreatedVersions")
+  createdRuleVersions    EligibilityRuleVersion[] @relation("UserCreatedRuleVersions")
+  reviewComments         ReviewComment[]          @relation("UserReviewComments")
+  auditLogs              AuditLog[]               @relation("UserAuditLogs")
+
+  @@index([role])
+  @@map("users")
+}
+
+model Scheme {
+  id                         String   @id @default(uuid())
+  schemeCode                 String   @unique
+  createdBy                  String
+  currentPublishedVersionId  String?  @unique
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  creator                   User                     @relation("UserCreatedSchemes", fields: [createdBy], references: [id], onDelete: Restrict)
+  currentPublishedVersion   SchemeVersion?           @relation("SchemeCurrentPublishedVersion", fields: [currentPublishedVersionId], references: [id], onDelete: SetNull)
+  versions                  SchemeVersion[]          @relation("SchemeVersions")
+  reviewFlags               SchemeReviewFlag[]       @relation("SchemeReviewFlags")
+
+  @@index([createdBy])
+  @@index([createdAt])
+  @@map("schemes")
+}
+
+model SchemeVersion {
+  id                  String       @id @default(uuid())
+  schemeId            String
+  versionNumber       Int
+  schemeName          String
+  description         String
+  amount              Decimal      @db.Decimal(12, 2)
+  applicationDeadline DateTime
+  status              SchemeStatus @default(DRAFT)
+  createdBy           String
+  submittedAt         DateTime?
+  publishedAt         DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  scheme              Scheme                        @relation("SchemeVersions", fields: [schemeId], references: [id], onDelete: Cascade)
+  creator             User                          @relation("UserCreatedVersions", fields: [createdBy], references: [id], onDelete: Restrict)
+  currentlyPublishedFor Scheme?                     @relation("SchemeCurrentPublishedVersion")
+  eligibilityRules    SchemeVersionEligibilityRule[]
+  reviewComments      ReviewComment[]               @relation("SchemeVersionComments")
+
+  @@unique([schemeId, versionNumber])
+  @@index([schemeId])
+  @@index([status])
+  @@index([createdBy])
+  @@index([createdAt])
+  @@map("scheme_versions")
+}
+
+model EligibilityRule {
+  id               String   @id @default(uuid())
+  ruleCode         String   @unique
+  name             String
+  description      String
+  latestVersionId  String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  versions         EligibilityRuleVersion[]       @relation("RuleVersions")
+  schemeLinks      SchemeVersionEligibilityRule[] @relation("RuleLinks")
+  reviewFlags      SchemeReviewFlag[]             @relation("RuleReviewFlags")
+
+  @@map("eligibility_rules")
+}
+
+model EligibilityRuleVersion {
+  id                String   @id @default(uuid())
+  eligibilityRuleId String
+  versionNumber     Int
+  ruleDefinition    Json
+  createdBy         String
+  createdAt         DateTime @default(now())
+
+  rule              EligibilityRule                @relation("RuleVersions", fields: [eligibilityRuleId], references: [id], onDelete: Cascade)
+  creator           User                           @relation("UserCreatedRuleVersions", fields: [createdBy], references: [id], onDelete: Restrict)
+  schemeLinks       SchemeVersionEligibilityRule[] @relation("RuleVersionLinks")
+
+  @@unique([eligibilityRuleId, versionNumber])
+  @@index([eligibilityRuleId])
+  @@index([createdBy])
+  @@map("eligibility_rule_versions")
+}
+
+model SchemeVersionEligibilityRule {
+  id                       String   @id @default(uuid())
+  schemeVersionId          String
+  eligibilityRuleId        String
+  eligibilityRuleVersionId String
+  createdAt                DateTime @default(now())
+
+  schemeVersion            SchemeVersion          @relation(fields: [schemeVersionId], references: [id], onDelete: Cascade)
+  eligibilityRule          EligibilityRule        @relation("RuleLinks", fields: [eligibilityRuleId], references: [id], onDelete: Restrict)
+  eligibilityRuleVersion   EligibilityRuleVersion @relation("RuleVersionLinks", fields: [eligibilityRuleVersionId], references: [id], onDelete: Restrict)
+
+  @@unique([schemeVersionId, eligibilityRuleId])
+  @@index([schemeVersionId])
+  @@index([eligibilityRuleId])
+  @@index([eligibilityRuleVersionId])
+  @@map("scheme_version_eligibility_rules")
+}
+
+model AuditLog {
+  id              String   @id @default(uuid())
+  entityType      String
+  entityId        String
+  schemeVersionId String?
+  fieldName       String
+  oldValue        Json?
+  newValue        Json?
+  changedBy       String
+  source          String
+  createdAt       DateTime @default(now())
+
+  user            User     @relation("UserAuditLogs", fields: [changedBy], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId])
+  @@index([schemeVersionId])
+  @@index([changedBy])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model ReviewComment {
+  id              String       @id @default(uuid())
+  schemeVersionId String
+  reviewerId      String
+  comment         String
+  action          ReviewAction
+  createdAt       DateTime     @default(now())
+
+  schemeVersion   SchemeVersion @relation("SchemeVersionComments", fields: [schemeVersionId], references: [id], onDelete: Cascade)
+  reviewer        User          @relation("UserReviewComments", fields: [reviewerId], references: [id], onDelete: Restrict)
+
+  @@index([schemeVersionId])
+  @@index([reviewerId])
+  @@index([createdAt])
+  @@map("review_comments")
+}
+
+model SchemeReviewFlag {
+  id                String           @id @default(uuid())
+  schemeId          String
+  eligibilityRuleId String
+  reason            String
+  status            ReviewFlagStatus @default(PENDING)
+  createdAt         DateTime         @default(now())
+  resolvedAt        DateTime?
+
+  scheme            Scheme          @relation("SchemeReviewFlags", fields: [schemeId], references: [id], onDelete: Cascade)
+  eligibilityRule   EligibilityRule @relation("RuleReviewFlags", fields: [eligibilityRuleId], references: [id], onDelete: Restrict)
+
+  @@index([schemeId])
+  @@index([eligibilityRuleId])
+  @@index([status])
+  @@map("scheme_review_flags")
+}
